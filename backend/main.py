@@ -81,10 +81,7 @@ if user_question:
                 retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 3})
                 
                 # 2. Setup LLM 
-                # Note: Switched to 1.5-flash as 2.5 is sometimes experimental/restricted. 
-                # If you have access to 2.5, change it back!
-                # We are switching to the standard "gemini-pro" to fix the 404 error
-                llm = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0)
+                llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
                 
                 # 3. Prompt
                 template = """Answer the question based only on the following context:
