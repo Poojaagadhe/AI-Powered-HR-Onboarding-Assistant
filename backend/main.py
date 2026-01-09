@@ -83,7 +83,7 @@ if user_question:
                 # 2. Setup LLM 
                 # Note: Switched to 1.5-flash as 2.5 is sometimes experimental/restricted. 
                 # If you have access to 2.5, change it back!
-                llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
+                llm = ChatGoogleGenerativeAI(model="models/gemini-1.5-flash-latest", temperature=0)
                 
                 # 3. Prompt
                 template = """Answer the question based only on the following context:
