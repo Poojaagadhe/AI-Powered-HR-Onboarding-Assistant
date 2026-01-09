@@ -1,7 +1,6 @@
+import streamlit as st
 import os
 import shutil
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from pydantic import BaseModel
 from dotenv import load_dotenv
 
 # --- GOOGLE GEMINI IMPORTS ---
@@ -13,87 +12,97 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 
-# Load API Key
+# 1. Load API Key (Try Streamlit Secrets first, then .env)
 load_dotenv()
+if "GOOGLE_API_KEY" not in os.environ:
+    if "GOOGLE_API_KEY" in st.secrets:
+        os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
+    else:
+        st.error("⚠️ Google API Key missing! Add it to .env or Streamlit Secrets.")
 
-app = FastAPI(title="AI HR Assistant (Gemini Powered)")
+# 2. Page Config
+st.set_page_config(page_title="AI HR Assistant", layout="wide")
+st.title("🤖 AI HR Onboarding Assistant")
 
-# --- GLOBAL VARIABLES ---
-vector_store = None
+# 3. Initialize Session State (Memory)
+if "vector_store" not in st.session_state:
+    st.session_state.vector_store = None
+
+# 4. Setup Upload Directory
 UPLOAD_DIR = "uploaded_docs"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+if not os.path.exists(UPLOAD_DIR):
+    os.makedirs(UPLOAD_DIR)
 
-class QueryRequest(BaseModel):
-    question: str
+# --- SIDEBAR: Document Upload ---
+with st.sidebar:
+    st.header("📂 Upload Documents")
+    uploaded_file = st.file_uploader("Upload a PDF Policy or Resume", type="pdf")
 
-@app.get("/")
-def home():
-    return {"message": "HR AI Assistant is ready. Upload a PDF!"}
+    if uploaded_file is not None:
+        if st.button("Process Document"):
+            with st.spinner("Processing PDF..."):
+                try:
+                    # Save the file locally
+                    file_path = os.path.join(UPLOAD_DIR, uploaded_file.name)
+                    with open(file_path, "wb") as buffer:
+                        shutil.copyfileobj(uploaded_file, buffer)
 
-@app.post("/upload-document")
-async def upload_document(file: UploadFile = File(...)):
-    global vector_store
-    
-    try:
-        # 1. Save File
-        file_path = os.path.join(UPLOAD_DIR, file.filename)
-        with open(file_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+                    # Load and Split
+                    loader = PyPDFLoader(file_path)
+                    documents = loader.load()
+                    
+                    text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+                    chunks = text_splitter.split_documents(documents)
 
-        # 2. Load PDF
-        loader = PyPDFLoader(file_path)
-        documents = loader.load()
+                    # Embed and Store
+                    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+                    
+                    if st.session_state.vector_store is None:
+                        st.session_state.vector_store = FAISS.from_documents(chunks, embeddings)
+                    else:
+                        st.session_state.vector_store.add_documents(chunks)
+                        
+                    st.success(f"✅ {uploaded_file.name} processed successfully!")
+                
+                except Exception as e:
+                    st.error(f"❌ Error processing file: {e}")
 
-        # 3. Split Text
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
-        chunks = text_splitter.split_documents(documents)
+# --- MAIN AREA: Q&A Interface ---
+st.subheader("💬 Ask a Question")
+user_question = st.text_input("Example: What is the leave policy?")
 
-        # 4. Embed & Store
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
-        
-        if vector_store is None:
-            vector_store = FAISS.from_documents(chunks, embeddings)
-        else:
-            vector_store.add_documents(chunks)
-
-        return {"status": "Success", "filename": file.filename, "message": "Document processed successfully!"}
-    
-    except Exception as e:
-        return {"status": "Error", "message": str(e)}
-
-@app.post("/ask")
-def ask_question(request: QueryRequest):
-    global vector_store
-    if vector_store is None:
-        return {"answer": "⚠️ Error: Please upload a document first (Vector Store is empty)."}
-
-    try:
-        # 1. Setup Retriever
-        retriever = vector_store.as_retriever(search_kwargs={"k": 3})
-        
-        # 2. Setup LLM (Trying the newest model on your list)
-        llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0)
-        
-        # 3. Prompt
-        template = """Answer the question based only on the following context:
-        {context}
-        
-        Question: {question}
-        """
-        prompt = ChatPromptTemplate.from_template(template)
-        
-        # 4. Chain
-        chain = (
-            {"context": retriever, "question": RunnablePassthrough()}
-            | prompt
-            | llm
-            | StrOutputParser()
-        )
-        
-        print(f"🤖 Asking Gemini 2.5: {request.question}")
-        answer = chain.invoke(request.question)
-        return {"answer": answer}
-
-    except Exception as e:
-        print(f"❌ ERROR IN ASK: {e}")
-        return {"answer": f"⚠️ SYSTEM ERROR: {str(e)}"}
+if user_question:
+    if st.session_state.vector_store is None:
+        st.warning("⚠️ Please upload and process a document first.")
+    else:
+        with st.spinner("Thinking..."):
+            try:
+                # 1. Setup Retriever
+                retriever = st.session_state.vector_store.as_retriever(search_kwargs={"k": 3})
+                
+                # 2. Setup LLM 
+                # Note: Switched to 1.5-flash as 2.5 is sometimes experimental/restricted. 
+                # If you have access to 2.5, change it back!
+                llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
+                
+                # 3. Prompt
+                template = """Answer the question based only on the following context:
+                {context}
+                
+                Question: {question}
+                """
+                prompt = ChatPromptTemplate.from_template(template)
+                
+                # 4. Chain
+                chain = (
+                    {"context": retriever, "question": RunnablePassthrough()}
+                    | prompt
+                    | llm
+                    | StrOutputParser()
+                )
+                
+                answer = chain.invoke(user_question)
+                st.write(answer)
+                
+            except Exception as e:
+                st.error(f"❌ Error generating answer: {e}")
